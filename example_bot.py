@@ -1,4 +1,4 @@
-"""Oval Hunter (v6): survival-aware, clearance-aware Mech Royale bot. Standard library only.
+"""Oval Hunter (v6): kill-oriented Mech Royale bot. Standard library only.
 
 Scoring insight: house bots never fight each other, so points ~= number of other mechs dead when
 we die. Kills are what move the score, so v4 engages 1-2 enemies (focus fire on weak targets,
@@ -15,12 +15,12 @@ TAU = 2.0 * math.pi
 # ---- tunables (flip these between practice submissions to A/B test) ----
 AGGRESSION = 1          # 0 = v3-style pure kiting, 1 = engage when odds are acceptable
 RETREAT_HP_FRAC = 0.30  # below this fraction of max hp, disengage
-MAX_ENGAGE_ENEMIES = 2  # visible enemies within ENGAGE_RANGE above this -> retreat mode
+MAX_ENGAGE_ENEMIES = 3  # A-bot LLC (10 kills) fought aggressively; v5 used 2
 ENGAGE_RANGE = 130.0
 TELEMETRY = False
 HEAL_ENTER = 0.35       # hp fraction that starts "break contact and heal"
 HEAL_EXIT = 0.80
-FARM_MAX_CUBES = 14     # shoot drones/crates for cubes until this many
+FARM_MAX_CUBES = 28     # top-16 winners finished with ~27 cubes (more upgrade offers); farm drones/crates longer
 FARM_RANGE = 90.0
 
 
@@ -77,8 +77,6 @@ def weapon_value(kind, enemy_kinds):
 
 
 CELL = 24.0
-MECH_RADIUS = 2.5
-MOVE_CLEARANCE = MECH_RADIUS + 0.35
 
 
 class Bot:
@@ -128,8 +126,8 @@ class Bot:
             self.obstacles.append((min(xs), max(xs), min(ys), max(ys),
                                    float(prism.get("base", -999)),
                                    float(prism.get("top", 999)), pts, holes))
-            cx0 = int((min(xs)-MOVE_CLEARANCE) // CELL); cx1 = int((max(xs)+MOVE_CLEARANCE) // CELL)
-            cy0 = int((min(ys)-MOVE_CLEARANCE) // CELL); cy1 = int((max(ys)+MOVE_CLEARANCE) // CELL)
+            cx0 = int((min(xs)-1.0) // CELL); cx1 = int((max(xs)+1.0) // CELL)
+            cy0 = int((min(ys)-1.0) // CELL); cy1 = int((max(ys)+1.0) // CELL)
             for cx in range(cx0, cx1+1):
                 for cy in range(cy0, cy1+1):
                     self.grid.setdefault((cx, cy), []).append(idx)
@@ -145,45 +143,17 @@ class Bot:
             j = i
         return inside
 
-    @staticmethod
-    def _segment_dist2(px, py, a, b):
-        ax, ay = a; bx, by = b
-        dx, dy = bx-ax, by-ay
-        den = dx*dx + dy*dy
-        u = 0.0 if den < 1e-12 else clamp(((px-ax)*dx+(py-ay)*dy)/den, 0.0, 1.0)
-        qx, qy = ax+u*dx, ay+u*dy
-        return (px-qx)*(px-qx) + (py-qy)*(py-qy)
-
-    @classmethod
-    def _near_poly_edge(cls, x, y, poly, clearance2):
-        n = len(poly)
-        for i in range(n):
-            if cls._segment_dist2(x, y, poly[i], poly[(i+1) % n]) < clearance2:
-                return True
-        return False
-
     def _blocked(self, x, y, feet_z):
-        # The server moves a 2.5 m-radius cylinder, not a point. Inflate solid
-        # footprints by the mech radius so navigation does not scrape corners.
         low, high = feet_z + 1.2, feet_z + 9.0
-        cx, cy = int(x // CELL), int(y // CELL)
-        clearance2 = MOVE_CLEARANCE * MOVE_CLEARANCE
-        for gx in (cx-1, cx, cx+1):
-            for gy in (cy-1, cy, cy+1):
-                for idx in self.grid.get((gx, gy), ()):
-                    x0, x1, y0, y1, base, top, ring, holes = self.obstacles[idx]
-                    if x < x0-MOVE_CLEARANCE or x > x1+MOVE_CLEARANCE or y < y0-MOVE_CLEARANCE or y > y1+MOVE_CLEARANCE:
-                        continue
-                    if top <= low or base >= high:
-                        continue
-                    inside_outer = self._inside_poly(x, y, ring)
-                    inside_hole = any(self._inside_poly(x, y, h) for h in holes)
-                    if inside_outer and not inside_hole:
-                        return True
-                    if self._near_poly_edge(x, y, ring, clearance2):
-                        return True
-                    if inside_hole and any(self._near_poly_edge(x, y, h, clearance2) for h in holes):
-                        return True
+        for idx in self.grid.get((int(x // CELL), int(y // CELL)), ()):
+            x0, x1, y0, y1, base, top, ring, holes = self.obstacles[idx]
+            if x < x0-0.8 or x > x1+0.8 or y < y0-0.8 or y > y1+0.8:
+                continue
+            if top <= low or base >= high:
+                continue
+            if self._inside_poly(x, y, ring):
+                if not any(self._inside_poly(x, y, h) for h in holes):
+                    return True
         return False
 
 
@@ -605,25 +575,12 @@ class Bot:
                 elif kind == "laser":
                     aim_pitch = math.atan2(tz-(z+7), max(1, d))
                     charge = w.get("charge", 0)
-                    if self.healing:
-                        # A charged laser fires on release (or auto-fires at its hold limit).
-                        # Keep charging while turning away, then dump the shot into open sky.
-                        threats = enemies
-                        if threats:
-                            threat = min(threats, key=lambda e: dist2((x, y), e["pos"]))
-                            safe_yaw = math.atan2(y-threat["pos"][1], x-threat["pos"][0])
-                        else:
-                            safe_yaw = wrap(cur[0] + math.pi)
-                        aim_yaw, aim_pitch = safe_yaw, 1.20
-                        safely_turned = abs(angle_delta(safe_yaw, cur[0])) < 0.10 and cur[1] > 0.85
-                        act["fire"][i] = bool(charge > 0 and not safely_turned)
-                    else:
-                        aligned = abs(angle_delta(aim_yaw, cur[0])) < 0.08
-                        act["fire"][i] = bool(los and aligned and charge < st.get("charge", 0.75)*0.94)
+                    aligned = abs(angle_delta(aim_yaw, cur[0])) < 0.08
+                    act["fire"][i] = bool(los and aligned and charge < st.get("charge", 0.75)*0.94)
                 elif kind == "mortar":
                     speed = st.get("speed", 72); grav = st.get("gravity", 22)
                     px_, py_, pz_ = dx, dy, tz-(z+9.5)
-                    th = None; tof = 0.0
+                    th = None
                     for _ in range(3):
                         R = max(1.0, math.hypot(px_, py_))
                         th = mortar_pitch(R, pz_, speed, grav, high=not los)
@@ -633,26 +590,7 @@ class Bot:
                     if th is not None:
                         aim_yaw = math.atan2(py_, px_)
                         aim_pitch = th
-                        # Validate the actual ballistic arc against map solids. High arcs
-                        # remain available over buildings, but blocked arcs are not fired.
-                        arc_clear = True
-                        horizontal = math.hypot(px_, py_)
-                        steps = max(4, int(tof / 0.06))
-                        for j in range(1, steps):
-                            tt = tof*j/steps
-                            rr = speed*math.cos(th)*tt
-                            xx = x + math.cos(aim_yaw)*rr
-                            yy = y + math.sin(aim_yaw)*rr
-                            zz = z+9.5 + speed*math.sin(th)*tt - 0.5*grav*tt*tt
-                            if self._solid_at(xx, yy, zz):
-                                arc_clear = False
-                                break
-                        act["fire"][i] = (arc_clear and 22 < d < 215
-                                          and w.get("cooldown", 1) <= 0.08)
-            if self.healing:
-                for i, w in enumerate(weapons[:2]):
-                    if w and w.get("kind") != "laser":
-                        act["fire"][i] = False
+                        act["fire"][i] = 22 < d < 215 and w.get("cooldown", 1) <= 0.08
             act["aim"] = [wrap(aim_yaw), clamp(aim_pitch, -0.65, 1.25)]
         else:
             if math.hypot(mx, my) > 0.05:
