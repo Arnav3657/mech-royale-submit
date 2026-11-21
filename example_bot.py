@@ -1,5 +1,7 @@
 """Survival-oriented Mech Royale bot. Standard library only."""
 import math
+import json
+import os
 import mechfight as mf
 
 TAU = 2.0 * math.pi
@@ -40,6 +42,102 @@ class Bot:
         self.last_seen_t = -100.0
         self.laser_release = [False, False]
         self.last_pos = None
+        self.obstacles = []
+        self.map_bounds = None
+        self._load_map(hello.get("map", {}).get("dir", "/arena"))
+
+    def _load_map(self, map_dir):
+        """Load static solid footprints once; the match map is read-only."""
+        candidates = [os.path.join(map_dir, "v2", "world.json"),
+                      "/arena/v2/world.json",
+                      "/mnt/data/mechkit/mechfight-kit/arena/v2/world.json"]
+        world = None
+        for path in candidates:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    world = json.load(f)
+                break
+            except (OSError, ValueError, TypeError):
+                continue
+        if not world:
+            return
+        self.map_bounds = world.get("bounds")
+        for prism in world.get("prisms", []):
+            ring = prism.get("ring", [])
+            if len(ring) < 6:
+                continue
+            pts = [(ring[i], ring[i+1]) for i in range(0, len(ring)-1, 2)]
+            xs = [q[0] for q in pts]; ys = [q[1] for q in pts]
+            holes = []
+            for h in prism.get("holes", []):
+                if len(h) >= 6:
+                    holes.append([(h[i], h[i+1]) for i in range(0, len(h)-1, 2)])
+            self.obstacles.append((min(xs), max(xs), min(ys), max(ys),
+                                   float(prism.get("base", -999)),
+                                   float(prism.get("top", 999)), pts, holes))
+
+    @staticmethod
+    def _inside_poly(x, y, poly):
+        inside = False
+        j = len(poly) - 1
+        for i in range(len(poly)):
+            xi, yi = poly[i]; xj, yj = poly[j]
+            if ((yi > y) != (yj > y)) and x < (xj-xi)*(y-yi)/(yj-yi+1e-12)+xi:
+                inside = not inside
+            j = i
+        return inside
+
+    def _blocked(self, x, y, feet_z):
+        # A prism blocks a walking path if it intersects the mech's 9 m body.
+        # Bridges with >=9 m clearance remain traversable; holes remain open.
+        low, high = feet_z + 1.2, feet_z + 9.0
+        for x0, x1, y0, y1, base, top, ring, holes in self.obstacles:
+            if x < x0-0.8 or x > x1+0.8 or y < y0-0.8 or y > y1+0.8:
+                continue
+            if top <= low or base >= high:
+                continue
+            if self._inside_poly(x, y, ring):
+                if not any(self._inside_poly(x, y, h) for h in holes):
+                    return True
+        return False
+
+    def navigate(self, x, y, z, gx, gy, current_vel):
+        """Short-horizon sampled heading planner over the real building footprints."""
+        dx, dy = gx-x, gy-y
+        goal_dist = math.hypot(dx, dy)
+        if goal_dist < 1.0 or not self.obstacles:
+            return norm(dx, dy)
+        desired = math.atan2(dy, dx)
+        # Include exact goal bearing and a fan of alternatives; evaluate 14 m ahead.
+        angles = [desired]
+        for deg in (15, -15, 30, -30, 45, -45, 60, -60, 80, -80,
+                    105, -105, 130, -130, 155, -155, 180):
+            angles.append(desired + math.radians(deg))
+        look = min(14.0, max(7.0, goal_dist))
+        best = None
+        prev = math.atan2(current_vel[1], current_vel[0]) if math.hypot(current_vel[0], current_vel[1]) > 1.0 else desired
+        for a in angles:
+            ux, uy = math.cos(a), math.sin(a)
+            clearance = look
+            blocked = False
+            # Sample at 1.5 m spacing with a small lateral footprint margin.
+            steps = int(look / 1.5) + 1
+            for k in range(1, steps+1):
+                r = min(look, k*1.5)
+                qx, qy = x+ux*r, y+uy*r
+                if self._blocked(qx, qy, z):
+                    clearance = max(0.0, r-1.5)
+                    blocked = True
+                    break
+            # Score progress, path clearance, and smoothness. Penalize dead ends strongly.
+            end_dist = math.hypot(gx-(x+ux*look), gy-(y+uy*look))
+            turn = abs(angle_delta(a, prev))
+            score = (end_dist + 2.2*turn - 0.22*clearance)
+            if blocked:
+                score += 18.0 + 1.4*(look-clearance)
+            if best is None or score < best[0]:
+                best = (score, ux, uy)
+        return (best[1], best[2]) if best else norm(dx,dy)
 
     def zone_target(self, obs, x, y):
         z = obs["zone"]
@@ -191,7 +289,9 @@ class Bot:
         if dist2((x,y), zc) > zr - 12:
             move_x += (zc[0]-x)*2.0
             move_y += (zc[1]-y)*2.0
-        mx, my = norm(move_x, move_y)
+        # Replace direct steering with map-aware local path selection.
+        nav_x, nav_y = self.navigate(x, y, z, x+move_x, y+move_y, me.get("vel", [0,0,0]))
+        mx, my = norm(nav_x, nav_y)
         act["move"] = [mx, my]
         # Spend boost to escape threats / zone, otherwise conserve for emergencies.
         danger = bool(enemies and min(dist2((x,y), e["pos"]) for e in enemies) < 48)
