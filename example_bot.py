@@ -1,4 +1,4 @@
-"""Oval Hunter (v7): kill-oriented Mech Royale bot. Standard library only.
+"""Oval Hunter (v8): kill-oriented Mech Royale bot. Standard library only.
 
 Scoring insight: house bots never fight each other, so points ~= number of other mechs dead when
 we die. Kills are what move the score, so v4 engages 1-2 enemies (focus fire on weak targets,
@@ -80,7 +80,7 @@ CELL = 24.0
 
 
 class Bot:
-    name = "Oval Hunter v7"
+    name = "Oval Hunter v8"
 
     def __init__(self, hello):
         self.cfg = hello["config"]
@@ -381,10 +381,13 @@ class Bot:
                 d = dist2((x, y), n["pos"])
                 if d < best_d and self.los_clear(x, y, z+7, n["pos"][0], n["pos"][1], n["pos"][2]+1.8):
                     best_d, farm = d, (n, "npc")
+            has_special = any(k and k != "gun" for k in kinds)
             for c in obs.get("crates", []):
                 d = dist2((x, y), c["pos"])
-                if d < best_d and self.los_clear(x, y, z+7, c["pos"][0], c["pos"][1], c["pos"][2]+1.5):
-                    best_d, farm = d, (c, "crate")
+                eff = d if has_special else d * 0.55      # crates drop a weapon 50% of the time: hunt them while autocannon-only
+                if d < (FARM_RANGE if has_special else 170.0) and eff < best_d \
+                        and self.los_clear(x, y, z+7, c["pos"][0], c["pos"][1], c["pos"][2]+1.5):
+                    best_d, farm = eff, (c, "crate")
         if farm and not near:
             target, tkind = farm
             target = dict(target); target.setdefault("vel", [0, 0, 0])
@@ -445,8 +448,9 @@ class Bot:
                 self.strafe_sign = -self.strafe_sign if (tick // 7 + self.slot) % 3 else self.strafe_sign
                 self.strafe_until = tick + 14 + (tick * 7 + self.slot) % 12
             radial = clamp((d_t - desired_range) / 18.0, -1.0, 1.0)
-            move_x = (ux*radial - uy*0.95*self.strafe_sign) * 40.0
-            move_y = (uy*radial + ux*0.95*self.strafe_sign) * 40.0
+            sf = 0.95 if d_t < desired_range + 25.0 else 0.25   # don't spiral when approaching from afar
+            move_x = (ux*radial - uy*sf*self.strafe_sign) * 40.0
+            move_y = (uy*radial + ux*sf*self.strafe_sign) * 40.0
             for e in near:
                 if e is target or e.get("id") == target.get("id"): continue
                 dx, dy = x-e["pos"][0], y-e["pos"][1]
