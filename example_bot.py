@@ -79,12 +79,12 @@ class Bot:
         # Upgrade choices: survival first, then mobility/weapon quality.
         offer = obs.get("offer")
         if offer:
-            priorities = {"armor": 100, "plating": 95, "nanites": 92, "servos": 80,
-                          "capacitor": 70, "reactor": 65, "jets": 60, "gyros": 55,
-                          "gun_rate": 52, "gun_damage": 50, "gun_velocity": 45,
-                          "laser_damage": 48, "laser_charge": 46, "mortar_reload": 43,
-                          "mortar_splash": 40, "lightning_efficiency": 40,
-                          "lightning_range": 35, "sensors": 30}
+            priorities = {"armor": 110, "plating": 102, "nanites": 98, "servos": 82,
+                          "capacitor": 74, "reactor": 72, "jets": 68, "gyros": 62,
+                          "sensors": 58, "gun_rate": 54, "gun_damage": 53, "gun_velocity": 48,
+                          "laser_damage": 52, "laser_charge": 49, "mortar_reload": 46,
+                          "mortar_splash": 44, "lightning_efficiency": 44,
+                          "lightning_range": 40}
             choices = offer.get("choices", [])
             if choices:
                 act["pick"] = max(range(len(choices)), key=lambda i: priorities.get(choices[i].get("id"), 0))
@@ -114,9 +114,12 @@ class Bot:
             d = dist2((x,y), p["pos"])
             if d < 75: loot_candidates.append((d - (32 if not any(k in kinds for k in ("mortar","laser","lightning")) else 10), p["pos"][0], p["pos"][1], "weapon"))
         for dr in obs.get("drops", []):
-            if dr.get("lands_in", 99) <= 0 and (dr.get("holder") in (None, me.get("id"))):
+            if dr.get("holder") in (None, me.get("id")):
                 d = dist2((x,y), dr["pos"])
-                if d < 150 and len(enemies) == 0: loot_candidates.append((d-55, dr["pos"][0], dr["pos"][1], "drop"))
+                # Start approaching while it falls; arrive shortly after landing and capture only if uncontested.
+                travel_time = d / max(5.0, me.get("stats",{}).get("walk_speed",11.7))
+                if d < 190 and len(enemies) == 0 and dr.get("lands_in",99) <= travel_time + 8.0:
+                    loot_candidates.append((d-75, dr["pos"][0], dr["pos"][1], "drop"))
         if loot_candidates:
             best = min(loot_candidates, key=lambda q:q[0])
             # Loot only if it does not require leaving the safe circle.
@@ -148,6 +151,40 @@ class Bot:
                     move_x -= math.cos(b)*20
                     move_y -= math.sin(b)*20
 
+        # Predict incoming projectiles and sidestep their future paths (velocity-obstacle idea).
+        # Projectiles are observed with world-space velocity; avoid their closest approach over 0.8 s.
+        for pr in obs.get("projectiles", []):
+            pp = pr.get("pos", [0,0,0]); pv = pr.get("vel", [0,0,0])
+            rx, ry = x-pp[0], y-pp[1]
+            vx, vy = me.get("vel", [0,0,0])[:2]
+            rvx, rvy = vx-pv[0], vy-pv[1]
+            vv = rvx*rvx+rvy*rvy
+            if vv < 1e-6: continue
+            tau = clamp(-(rx*rvx+ry*rvy)/vv, 0.0, 0.8)
+            cx, cy = rx+rvx*tau, ry+rvy*tau
+            miss = math.hypot(cx,cy)
+            if miss < 12.0 and tau > 0.03:
+                # Perpendicular dodge, choosing the side that makes progress toward the goal.
+                side = 1.0 if (-(cy)*move_x + cx*move_y) >= 0 else -1.0
+                strength = (12.0-miss)/12.0 * (1.0-tau/0.9)
+                move_x += side*(-rvy)*strength*2.0
+                move_y += side*( rvx)*strength*2.0
+
+        # Avoid predicted enemy interception, not merely current proximity.
+        # This is a lightweight velocity-obstacle approximation suitable for the 50 ms budget.
+        for e in enemies:
+            ep=e.get("pos",[0,0,0]); ev=e.get("vel",[0,0,0])
+            ex,ey=ep[0]-x,ep[1]-y
+            rvx=ev[0]-me.get("vel",[0,0,0])[0]; rvy=ev[1]-me.get("vel",[0,0,0])[1]
+            vv=rvx*rvx+rvy*rvy
+            tau=clamp(-(ex*rvx+ey*rvy)/vv,0.0,1.4) if vv>1e-6 else 0.0
+            future=math.hypot(ex+rvx*tau,ey+rvy*tau)
+            if future < 42.0:
+                away=norm(x-(ep[0]+ev[0]*tau), y-(ep[1]+ev[1]*tau))
+                strength=(42.0-future)/42.0
+                move_x += away[0]*strength*42.0
+                move_y += away[1]*strength*42.0
+
         # Zone correction is non-negotiable; keep a strong inward component outside.
         zc = obs["zone"]["center"]
         zr = obs["zone"]["radius"]
@@ -174,14 +211,18 @@ class Bot:
             kinds = [w.get("kind") if w else None for w in weapons[:2]]
             preferred = None
             if d < 43 and "lightning" in kinds: preferred = kinds.index("lightning")
-            elif 35 < d < 175 and "mortar" in kinds: preferred = kinds.index("mortar")
-            elif 55 < d < 275 and "laser" in kinds: preferred = kinds.index("laser")
+            elif 38 < d < 185 and "mortar" in kinds: preferred = kinds.index("mortar")
+            elif 65 < d < 270 and "laser" in kinds: preferred = kinds.index("laser")
             elif "gun" in kinds: preferred = kinds.index("gun")
             elif any(weapons): preferred = next(i for i,w in enumerate(weapons[:2]) if w)
-            # Choose a useful weapon and lead its target.
+            # Choose a single weapon and compute its own aiming solution.
+            # Firing both slots while aiming only one causes systematic misses.
             for i, w in enumerate(weapons[:2]):
                 if not w: continue
                 kind = w.get("kind")
+                if i != preferred:
+                    act["fire"][i] = False
+                    continue
                 stats = w.get("stats", {})
                 if kind == "gun":
                     speed = stats.get("speed", 252)
@@ -191,18 +232,20 @@ class Bot:
                     qx = dx + tv[0]*it; qy = dy + tv[1]*it; qz = rel[2] + tv[2]*it
                     aim_yaw = math.atan2(qy, qx)
                     aim_pitch = math.atan2(qz, max(1e-6, math.hypot(qx,qy)))
-                    act["fire"][i] = (w.get("cooldown", 1) <= 0.06 and w.get("reload", 0) <= 0 and w.get("ammo", 1) > 0)
+                    yaw_err = abs(angle_delta(aim_yaw, me.get("aim",[aim_yaw,0])[0]))
+                    pitch_err = abs(aim_pitch - me.get("aim",[0,aim_pitch])[1])
+                    act["fire"][i] = (w.get("cooldown", 1) <= 0.06 and w.get("reload", 0) <= 0 and w.get("ammo", 1) > 0 and yaw_err < 0.10 and pitch_err < 0.10)
                     if w.get("ammo", 1) <= 1 and w.get("reload", 0) <= 0: act["reload"] = True
                 elif kind == "lightning":
                     aim_yaw = math.atan2(dy,dx)
                     aim_pitch = math.atan2((tp[2]+2)-(z+7), max(1,d))
-                    act["fire"][i] = d <= stats.get("range",45)*0.98 and abs(angle_delta(aim_yaw, me.get("aim",[aim_yaw,0])[0])) < 0.5 and w.get("cooldown",1) <= 0.06 and energy >= stats.get("energy",3)
+                    act["fire"][i] = d <= stats.get("range",45)*0.98 and abs(angle_delta(aim_yaw, me.get("aim",[aim_yaw,0])[0])) < math.radians(12) and w.get("cooldown",1) <= 0.06 and energy >= stats.get("energy",3)
                 elif kind == "laser":
                     aim_yaw = math.atan2(dy,dx)
                     aim_pitch = math.atan2((tp[2]+4.5)-(z+7), max(1,d))
                     charge = w.get("charge", 0)
                     # Charge while torso tracks target; release at full charge or if target very close.
-                    if charge >= stats.get("charge",0.75)*0.92:
+                    if charge >= stats.get("charge",0.75)*0.94:
                         act["fire"][i] = False
                     else:
                         act["fire"][i] = True
