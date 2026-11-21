@@ -1,4 +1,4 @@
-"""Oval Hunter (v6): kill-oriented Mech Royale bot. Standard library only.
+"""Oval Hunter (v7): kill-oriented Mech Royale bot. Standard library only.
 
 Scoring insight: house bots never fight each other, so points ~= number of other mechs dead when
 we die. Kills are what move the score, so v4 engages 1-2 enemies (focus fire on weak targets,
@@ -69,10 +69,10 @@ COUNTER = {"laser": "lightning", "mortar": "laser", "lightning": "mortar"}  # en
 
 
 def weapon_value(kind, enemy_kinds):
-    v = {"lightning": 3.0, "laser": 2.6, "mortar": 1.6}.get(kind, 0.0)
+    v = {"laser": 3.0, "lightning": 2.7, "mortar": 1.0}.get(kind, 0.0)
     for ek in enemy_kinds:
         if COUNTER.get(ek) == kind:
-            v += 1.2
+            v += 0.6
     return v
 
 
@@ -80,7 +80,7 @@ CELL = 24.0
 
 
 class Bot:
-    name = "Oval Hunter v6"
+    name = "Oval Hunter v7"
 
     def __init__(self, hello):
         self.cfg = hello["config"]
@@ -402,7 +402,7 @@ class Bot:
             if tkind == "mech":
                 if d_t < lrange*0.95 and "lightning" in kinds and energy >= 3: preferred = kinds.index("lightning")
                 elif 40 < d_t < 185 and "mortar" in kinds: preferred = kinds.index("mortar")
-                elif 65 < d_t < 270 and "laser" in kinds: preferred = kinds.index("laser")
+                elif 40 < d_t < 270 and "laser" in kinds: preferred = kinds.index("laser")
                 elif "gun" in kinds: preferred = kinds.index("gun")
                 elif any(weapons): preferred = next(i for i, w in enumerate(weapons[:2]) if w)
             else:  # drones / crates: only cheap, safe weapons
