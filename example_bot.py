@@ -1,4 +1,4 @@
-"""Oval Hunter (v8): kill-oriented Mech Royale bot. Standard library only.
+"""Oval Hunter (v9): kill-oriented Mech Royale bot. Standard library only.
 
 Scoring insight: house bots never fight each other, so points ~= number of other mechs dead when
 we die. Kills are what move the score, so v4 engages 1-2 enemies (focus fire on weak targets,
@@ -80,7 +80,7 @@ CELL = 24.0
 
 
 class Bot:
-    name = "Oval Hunter v8"
+    name = "Oval Hunter v9"
 
     def __init__(self, hello):
         self.cfg = hello["config"]
@@ -98,6 +98,10 @@ class Bot:
         self.last_obs = None
         self.healing = False
         self.cover_cache = (-99, None)
+        self.last_dmg = (-99.0, None, None, False)
+        self.climb_id = None
+        self.climb_t0 = 0.0
+        self.bad_climb = set()
         self._load_map(hello.get("map", {}).get("dir", "/arena"))
 
     # ------------------------------------------------------------------ map
@@ -261,6 +265,8 @@ class Bot:
             radius += (zn["next_radius"]-radius)*f
         elif t > se:
             cx, cy, radius = nx, ny, zn["next_radius"]
+        elif t < ss and ss - t < 30.0:
+            cx, cy, radius = nx, ny, zn["next_radius"]
         d = math.hypot(x-cx, y-cy)
         safe_r = max(0.0, radius - 35.0)
         if d > safe_r or d > max(35.0, safe_r*0.48):
@@ -309,6 +315,11 @@ class Bot:
         vel = me.get("vel", [0, 0, 0])
         mst = me.get("stats", {})
         self.log_events(obs, me)
+        for ev in obs.get("events", []):
+            if ev.get("type") == "damaged" and ev.get("by") is not None and ev.get("bearing") is not None:
+                self.last_dmg = (t, ev["bearing"], ev["by"], bool(ev.get("rear")))
+        zs = obs["zone"]
+        soon = t > zs["shrink_start"] - 30.0
         mechs_vis = [m for m in obs.get("mechs", []) if m.get("kind") == "mech"]
         enemies = mechs_vis
         npcs = [m for m in obs.get("mechs", []) if m.get("kind") == "npc"]
@@ -353,6 +364,9 @@ class Bot:
                     s -= 35.0
                 return s
             target = min(enemies, key=score)
+            att = next((m for m in enemies if m.get("id") == self.last_dmg[2]), None) if t - self.last_dmg[0] < 1.2 else None
+            if att is not None and dist2(me["pos"], att["pos"]) < 150:
+                target = att
             self.target_id = target["id"]
             tkind = "mech"
 
@@ -422,21 +436,23 @@ class Bot:
         cands = []
         for c in obs.get("cubes", []):
             d = dist2((x, y), c["pos"])
-            if d < 95: cands.append((d-24, c["pos"][0], c["pos"][1]))
+            if d < 95: cands.append((d-24, c["pos"][0], c["pos"][1], c["pos"][2], "c", c.get("id")))
         for v, p in wants:
             d = dist2((x, y), p["pos"])
-            if d < 90: cands.append((d - 14.0*v, p["pos"][0], p["pos"][1]))
+            if d < 90: cands.append((d - 14.0*v, p["pos"][0], p["pos"][1], p["pos"][2], "w", p.get("id")))
         if not enemies:
             for dr in obs.get("drops", []):
                 if dr.get("holder") in (None, me.get("id")):
                     d = dist2((x, y), dr["pos"])
                     tt = d / max(5.0, mst.get("walk_speed", 11.7))
                     if d < 190 and dr.get("lands_in", 99) <= tt + 8.0:
-                        cands.append((d-75, dr["pos"][0], dr["pos"][1]))
+                        cands.append((d-75, dr["pos"][0], dr["pos"][1], dr["pos"][2], "d", dr.get("id")))
+        goal = None
         if cands and not self.healing:
             b = min(cands, key=lambda q: q[0])
             if b[0] < dist2((x, y), zone_goal) + 15:
                 gx, gy = b[1], b[2]
+                goal = b
 
         move_x, move_y = gx-x, gy-y
         hold_still = False
@@ -462,7 +478,7 @@ class Bot:
             last_t, cov = self.cover_cache
             if tick - last_t >= 3:
                 threats = [e["pos"] for e in enemies]
-                cov = self.find_cover(x, y, z, threats, zc, zr)
+                cov = self.find_cover(x, y, z, threats, zs["next_center"] if soon else zc, zs["next_radius"] if soon else zr)
                 self.cover_cache = (tick, cov)
             if cov is not None:
                 if math.hypot(cov[0]-x, cov[1]-y) < 3.0:
@@ -478,7 +494,7 @@ class Bot:
                 move_x += rx*80; move_y += ry*80
         elif self.healing:
             # nobody in view: stand still (silent) unless the zone forces us out
-            if dist2((x, y), zc) < zr - 25:
+            if dist2((x, y), zc) < zr - 25 and (not soon or dist2((x, y), zs["next_center"]) < zs["next_radius"] - 20):
                 hold_still = True
         else:
             if enemies:
@@ -526,6 +542,16 @@ class Bot:
                 move_x += side*(-rvy)*st*2.0
                 move_y += side*(rvx)*st*2.0
 
+        for e in enemies:
+            ea = e.get("aim")
+            if e.get("charging") and ea:
+                ex, ey = e["pos"][0], e["pos"][1]
+                if math.hypot(x-ex, y-ey) < 285 and abs(angle_delta(math.atan2(y-ey, x-ex), ea[0])) < 0.22:
+                    hold_still = False
+                    qx, qy = -math.sin(ea[0]), math.cos(ea[0])
+                    side = 1.0 if ((x-ex)*qx + (y-ey)*qy) >= 0 else -1.0
+                    move_x += qx*side*60.0; move_y += qy*side*60.0
+
         outside = dist2((x, y), zc) > zr - 8
         if dist2((x, y), zc) > zr - 12:
             hold_still = False
@@ -540,6 +566,22 @@ class Bot:
         retreating = bool(enemies) and not engage
         act["boost"] = energy > 18 and ((retreating and danger) or outside or not me.get("in_zone", True))
         act["jump"] = bool(me.get("grounded") and (outside or (retreating and danger and energy > 45)) and tick % 8 == 0)
+
+        # ---- climb to a weapon lying on a roof (jump, then jet until the feet clear the edge, then walk on)
+        if goal and goal[4] == "w" and not engage and not self.healing and not near:
+            gz = goal[3]; dz = gz - z; hd = math.hypot(goal[1]-x, goal[2]-y)
+            gid = goal[5]
+            if 2.0 < dz < 45.0 and hd < 45.0 and gid not in self.bad_climb and energy > 25:
+                if self.climb_id != gid:
+                    self.climb_id, self.climb_t0 = gid, t
+                elif t - self.climb_t0 > 14.0:
+                    self.bad_climb.add(gid)
+                if gid not in self.bad_climb:
+                    mx, my = norm(goal[1]-x, goal[2]-y)
+                    act["move"] = [mx, my]
+                    grounded = me.get("grounded", True)
+                    act["jump"] = bool(grounded and hd < 25.0)
+                    act["boost"] = bool((not grounded) and z < gz + 1.0 and energy > 5)
 
         # ---- aim & fire
         if target:
@@ -597,7 +639,9 @@ class Bot:
                         act["fire"][i] = 22 < d < 215 and w.get("cooldown", 1) <= 0.08
             act["aim"] = [wrap(aim_yaw), clamp(aim_pitch, -0.65, 1.25)]
         else:
-            if math.hypot(mx, my) > 0.05:
+            if t - self.last_dmg[0] < 0.8 and self.last_dmg[1] is not None:
+                act["aim"] = [wrap(self.last_dmg[1]), 0.0]
+            elif math.hypot(mx, my) > 0.05:
                 act["aim"] = [math.atan2(my, mx), 0.0]
             for w in weapons[:2]:
                 if w and w.get("kind") == "gun" and w.get("ammo", 12) <= 5 and w.get("reload", 0) <= 0:
