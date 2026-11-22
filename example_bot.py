@@ -1,4 +1,4 @@
-"""Oval Hunter (v13): kill-oriented Mech Royale bot. Standard library only.
+"""Oval Hunter (v14): kill-oriented Mech Royale bot. Standard library only.
 
 Scoring insight: house bots never fight each other, so points ~= number of other mechs dead when
 we die. Kills are what move the score, so v4 engages 1-2 enemies (focus fire on weak targets,
@@ -18,17 +18,9 @@ RETREAT_HP_FRAC = 0.30  # below this fraction of max hp, disengage
 MAX_ENGAGE_ENEMIES = 3  # A-bot LLC (10 kills) fought aggressively; v5 used 2
 ENGAGE_RANGE = 130.0
 TELEMETRY = False
-HIDE = 1               # stealth bet: once armed (or after HIDE_AFTER_S), stand still + scan instead of wandering when nobody is in sight
-HIDE_AFTER_S = 45.0     # hide this many seconds in even without a special weapon (0 = immediately, 999 = only once armed)
-HIDE_LOOT_R = 40.0      # don't hide while loot (cube/weapon/drop) is within this many metres
-HIDE_SCAN = 0.3         # radians added to torso yaw per decision while hiding (0 = stare in one direction)
-HIDE_NOOK = 0           # 1 = first walk to a nearby low-exposure spot (few long sightlines), then hide there
-NAV_RAD = 0.0           # body-clearance radius (m) for path planning; 0 = v9 behaviour (point check). v10 used 2.6 and scored worse (2.40)
-NAV_RAD_FROM = 3.0      # only apply NAV_RAD to samples farther than this from the mech
-COVER_RAD = 0.0         # body-clearance radius for cover search; 0 = v9 behaviour
 HEAL_ENTER = 0.35       # hp fraction that starts "break contact and heal"
 HEAL_EXIT = 0.80
-FARM_MAX_CUBES = 28     # top-16 winners finished with ~27 cubes (more upgrade offers); farm drones/crates longer
+FARM_MAX_CUBES = 21     # top-16 winners finished with ~27 cubes (more upgrade offers); farm drones/crates longer
 FARM_RANGE = 90.0
 
 
@@ -88,7 +80,7 @@ CELL = 24.0
 
 
 class Bot:
-    name = "Oval Hunter v13"
+    name = "Oval Hunter v14"
 
     def __init__(self, hello):
         self.cfg = hello["config"]
@@ -107,7 +99,6 @@ class Bot:
         self.healing = False
         self.cover_cache = (-99, None)
         self.last_dmg = (-99.0, None, None, False)
-        self.nook = None
         self.climb_id = None
         self.climb_t0 = 0.0
         self.bad_climb = set()
@@ -156,16 +147,7 @@ class Bot:
             j = i
         return inside
 
-    def _blocked(self, x, y, feet_z, rad=0.0):
-        """True if a prism blocks (x, y); with rad > 0, if it blocks anywhere on the mech's body circle (cylinder radius 2.5 m)."""
-        if rad <= 0.0:
-            return self._blocked_pt(x, y, feet_z)
-        d = rad * 0.707
-        pt = self._blocked_pt
-        return (pt(x, y, feet_z) or pt(x+rad, y, feet_z) or pt(x-rad, y, feet_z) or pt(x, y+rad, feet_z) or pt(x, y-rad, feet_z)
-                or pt(x+d, y+d, feet_z) or pt(x-d, y+d, feet_z) or pt(x+d, y-d, feet_z) or pt(x-d, y-d, feet_z))
-
-    def _blocked_pt(self, x, y, feet_z):
+    def _blocked(self, x, y, feet_z):
         low, high = feet_z + 1.2, feet_z + 9.0
         for idx in self.grid.get((int(x // CELL), int(y // CELL)), ()):
             x0, x1, y0, y1, base, top, ring, holes = self.obstacles[idx]
@@ -213,7 +195,7 @@ class Bot:
                 px, py = x + r*math.cos(a), y + r*math.sin(a)
                 if math.hypot(px-zc[0], py-zc[1]) > zr - 15.0:
                     continue
-                if self._blocked(px, py, z, COVER_RAD):
+                if self._blocked(px, py, z):
                     continue
                 hidden = True
                 for e in threats:
@@ -225,7 +207,7 @@ class Bot:
                 ok = True
                 for j in range(1, int(r/3.0)+1):
                     f = j*3.0/r
-                    if self._blocked(x+(px-x)*f, y+(py-y)*f, z, COVER_RAD if f * r > 3.0 else 0.0):
+                    if self._blocked(x+(px-x)*f, y+(py-y)*f, z):
                         ok = False
                         break
                 if not ok:
@@ -238,41 +220,9 @@ class Bot:
                 break
         return (best[1], best[2]) if best else None
 
-    def find_nook(self, x, y, z, zc, zr):
-        """A nearby spot with short sightlines (walls close on most sides). Returns (x, y); the current spot if nothing beats it."""
-        if not self.obstacles:
-            return (x, y)
-        def openness(px, py):
-            tot = 0.0
-            for k in range(8):
-                a = k * math.pi / 4.0
-                c, s_ = math.cos(a), math.sin(a)
-                free = 64.0
-                for i in range(1, 9):
-                    if self._solid_at(px + c*i*8.0, py + s_*i*8.0, z + 4.5):
-                        free = i * 8.0
-                        break
-                tot += free
-            return tot
-        best = (openness(x, y) * 0.9, x, y)
-        for r in (8.0, 16.0, 28.0, 40.0):
-            for k in range(10):
-                a = k * TAU / 10.0
-                px, py = x + r*math.cos(a), y + r*math.sin(a)
-                if math.hypot(px-zc[0], py-zc[1]) > zr - 30.0 or self._blocked(px, py, z, 1.5):
-                    continue
-                ok = True
-                for j in range(1, int(r/4.0)+1):
-                    f = j * 4.0 / r
-                    if self._blocked(x+(px-x)*f, y+(py-y)*f, z):
-                        ok = False
-                        break
-                if not ok:
-                    continue
-                o = openness(px, py) + 0.4*r
-                if o < best[0]:
-                    best = (o, px, py)
-        return (best[1], best[2])
+    def rng_jitter(self):
+        self._j = (self.__dict__.get('_j', 0.37) * 9301.0 + 49297.0) % 233280.0
+        return (self._j / 233280.0 - 0.5) * 0.8
 
     def navigate(self, x, y, z, gx, gy, vel):
         dx, dy = gx-x, gy-y
@@ -293,7 +243,7 @@ class Bot:
             steps = int(look / 1.5) + 1
             for k in range(1, steps+1):
                 r = min(look, k*1.5)
-                if self._blocked(x+ux*r, y+uy*r, z, NAV_RAD if r > NAV_RAD_FROM else 0.0):
+                if self._blocked(x+ux*r, y+uy*r, z):
                     clearance = max(0.0, r-1.5)
                     blocked = True
                     break
@@ -389,11 +339,12 @@ class Bot:
         # ---- upgrades
         offer = obs.get("offer")
         if offer and offer.get("choices"):
-            pri = {"armor": 110, "plating": 104, "gun_damage": 100, "gun_rate": 99, "nanites": 96,
-                   "servos": 80, "capacitor": 74, "reactor": 72, "laser_damage": 70, "gyros": 66,
-                   "jets": 64, "gun_velocity": 62, "sensors": 58, "laser_charge": 52,
-                   "mortar_reload": 50, "mortar_splash": 48, "lightning_efficiency": 68,
-                   "lightning_range": 60}
+            # ids verified against hello.config.upgrades. plating (+15% max HP) beats armor (-8% dmg = ~+8.7% eff. HP).
+            pri = {"plating": 112, "armor": 108, "gun_damage": 100, "gun_rate": 99, "gun_mag": 97,
+                   "nanites": 96, "servos": 82, "capacitor": 74, "reactor": 72, "lightning_chain": 71,
+                   "laser_damage": 70, "lightning_efficiency": 68, "gyros": 66, "jets": 64,
+                   "gun_velocity": 62, "lightning_range": 60, "sensors": 58, "laser_charge": 52,
+                   "mortar_reload": 50, "mortar_splash": 48, "mortar_velocity": 45, "laser_pierce": 40}
             ch = offer["choices"]
             act["pick"] = max(range(len(ch)), key=lambda i: pri.get(ch[i].get("id"), 0))
 
@@ -579,24 +530,6 @@ class Bot:
                         bb = s_.get("bearing", 0.0)
                         move_x -= math.cos(bb)*20; move_y -= math.sin(bb)*20
 
-        hide_active = False
-        if HIDE and not enemies and not self.healing and not engage:
-            has_special = any(k and k != "gun" for k in kinds)
-            near_loot = goal is not None and dist2((x, y), (goal[1], goal[2])) < HIDE_LOOT_R
-            safe = dist2((x, y), zc) < zr - 25.0 and (not soon or dist2((x, y), zs["next_center"]) < zs["next_radius"] - 20.0)
-            if (has_special or t > HIDE_AFTER_S) and not near_loot and safe:
-                hold_still = True
-                hide_active = True
-                if HIDE_NOOK:
-                    if self.nook is None:
-                        self.nook = self.find_nook(x, y, z, zc, zr)
-                    nk = self.nook
-                    if nk is not None and math.hypot(nk[0]-x, nk[1]-y) > 3.0:
-                        hold_still = False
-                        move_x, move_y = nk[0]-x, nk[1]-y
-        if enemies or self.healing or engage:
-            self.nook = None
-
         # ---- projectile dodging
         for pr in obs.get("projectiles", []):
             pp = pr.get("pos", [0, 0, 0]); pv = pr.get("vel", [0, 0, 0])
@@ -633,6 +566,19 @@ class Bot:
         mx, my = norm(nx_, ny_)
         if hold_still:
             mx = my = 0.0
+        # ---- anti-stuck: commanded to move but barely displaced for ~4 s -> sidestep/back off for 1.5 s
+        hist = self.__dict__.setdefault("_pos_hist", [])
+        hist.append((t, x, y, hold_still or (mx == 0.0 and my == 0.0)))
+        while hist and t - hist[0][0] > 4.0: hist.pop(0)
+        if t < self.__dict__.get("_esc_until", 0.0):
+            ex_, ey_ = self._esc_dir
+            mx, my = ex_, ey_
+        elif (len(hist) > 30 and hist[-1][0] - hist[0][0] > 3.5 and not any(h[3] for h in hist)
+              and math.hypot(x - hist[0][1], y - hist[0][2]) < 2.5 and not (enemies and engage)):
+            ang = math.atan2(my, mx) + (math.pi * 0.5 if int(t) % 2 == 0 else -math.pi * 0.5) + self.rng_jitter()
+            self._esc_dir = (math.cos(ang), math.sin(ang)); self._esc_until = t + 1.5
+            mx, my = self._esc_dir
+            del hist[:]
         act["move"] = [mx, my]
         danger = bool(enemies and min(dist2((x, y), e["pos"]) for e in enemies) < 48)
         retreating = bool(enemies) and not engage
@@ -711,9 +657,7 @@ class Bot:
                         act["fire"][i] = 22 < d < 215 and w.get("cooldown", 1) <= 0.08
             act["aim"] = [wrap(aim_yaw), clamp(aim_pitch, -0.65, 1.25)]
         else:
-            if hide_active and not (t - self.last_dmg[0] < 0.8):
-                act["aim"] = [wrap(me.get("aim", [0.0, 0.0])[0] + HIDE_SCAN), 0.0]   # slow scan: 120 degree vision wedge follows the torso
-            elif t - self.last_dmg[0] < 0.8 and self.last_dmg[1] is not None:
+            if t - self.last_dmg[0] < 0.8 and self.last_dmg[1] is not None:
                 act["aim"] = [wrap(self.last_dmg[1]), 0.0]
             elif math.hypot(mx, my) > 0.05:
                 act["aim"] = [math.atan2(my, mx), 0.0]
