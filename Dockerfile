@@ -1,6 +1,8 @@
-# Build from this folder: docker build -t my-bot .
-# The match runs it with no network, a read-only root (writable /tmp), 1 CPU, 512 MB, and the map at /arena.
-FROM python:3.13-slim
-WORKDIR /bot
-COPY . .
-ENTRYPOINT ["python3", "-u", "/bot/example_bot.py"]
+FROM gcc:13-bookworm AS build
+COPY pipe.cpp /src/pipe.cpp
+RUN g++ -O3 -mavx2 -mbmi2 -mpopcnt -std=c++17 -pthread -static-libstdc++ -static-libgcc -o /pipe /src/pipe.cpp
+
+FROM debian:bookworm-slim
+COPY --from=build /pipe /app/pipe
+WORKDIR /app
+CMD ["/app/pipe"]
