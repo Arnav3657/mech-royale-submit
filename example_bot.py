@@ -1,4 +1,4 @@
-"""Oval Hunter (v12): kill-oriented Mech Royale bot. Standard library only.
+"""Oval Hunter (v13): kill-oriented Mech Royale bot. Standard library only.
 
 Scoring insight: house bots never fight each other, so points ~= number of other mechs dead when
 we die. Kills are what move the score, so v4 engages 1-2 enemies (focus fire on weak targets,
@@ -19,7 +19,10 @@ MAX_ENGAGE_ENEMIES = 3  # A-bot LLC (10 kills) fought aggressively; v5 used 2
 ENGAGE_RANGE = 130.0
 TELEMETRY = False
 HIDE = 1               # stealth bet: once armed (or after HIDE_AFTER_S), stand still + scan instead of wandering when nobody is in sight
-HIDE_AFTER_S = 45.0
+HIDE_AFTER_S = 45.0     # hide this many seconds in even without a special weapon (0 = immediately, 999 = only once armed)
+HIDE_LOOT_R = 40.0      # don't hide while loot (cube/weapon/drop) is within this many metres
+HIDE_SCAN = 0.3         # radians added to torso yaw per decision while hiding (0 = stare in one direction)
+HIDE_NOOK = 0           # 1 = first walk to a nearby low-exposure spot (few long sightlines), then hide there
 NAV_RAD = 0.0           # body-clearance radius (m) for path planning; 0 = v9 behaviour (point check). v10 used 2.6 and scored worse (2.40)
 NAV_RAD_FROM = 3.0      # only apply NAV_RAD to samples farther than this from the mech
 COVER_RAD = 0.0         # body-clearance radius for cover search; 0 = v9 behaviour
@@ -85,7 +88,7 @@ CELL = 24.0
 
 
 class Bot:
-    name = "Oval Hunter v12"
+    name = "Oval Hunter v13"
 
     def __init__(self, hello):
         self.cfg = hello["config"]
@@ -104,6 +107,7 @@ class Bot:
         self.healing = False
         self.cover_cache = (-99, None)
         self.last_dmg = (-99.0, None, None, False)
+        self.nook = None
         self.climb_id = None
         self.climb_t0 = 0.0
         self.bad_climb = set()
@@ -233,6 +237,42 @@ class Bot:
             if best:
                 break
         return (best[1], best[2]) if best else None
+
+    def find_nook(self, x, y, z, zc, zr):
+        """A nearby spot with short sightlines (walls close on most sides). Returns (x, y); the current spot if nothing beats it."""
+        if not self.obstacles:
+            return (x, y)
+        def openness(px, py):
+            tot = 0.0
+            for k in range(8):
+                a = k * math.pi / 4.0
+                c, s_ = math.cos(a), math.sin(a)
+                free = 64.0
+                for i in range(1, 9):
+                    if self._solid_at(px + c*i*8.0, py + s_*i*8.0, z + 4.5):
+                        free = i * 8.0
+                        break
+                tot += free
+            return tot
+        best = (openness(x, y) * 0.9, x, y)
+        for r in (8.0, 16.0, 28.0, 40.0):
+            for k in range(10):
+                a = k * TAU / 10.0
+                px, py = x + r*math.cos(a), y + r*math.sin(a)
+                if math.hypot(px-zc[0], py-zc[1]) > zr - 30.0 or self._blocked(px, py, z, 1.5):
+                    continue
+                ok = True
+                for j in range(1, int(r/4.0)+1):
+                    f = j * 4.0 / r
+                    if self._blocked(x+(px-x)*f, y+(py-y)*f, z):
+                        ok = False
+                        break
+                if not ok:
+                    continue
+                o = openness(px, py) + 0.4*r
+                if o < best[0]:
+                    best = (o, px, py)
+        return (best[1], best[2])
 
     def navigate(self, x, y, z, gx, gy, vel):
         dx, dy = gx-x, gy-y
@@ -542,11 +582,20 @@ class Bot:
         hide_active = False
         if HIDE and not enemies and not self.healing and not engage:
             has_special = any(k and k != "gun" for k in kinds)
-            near_loot = goal is not None and dist2((x, y), (goal[1], goal[2])) < 40.0
+            near_loot = goal is not None and dist2((x, y), (goal[1], goal[2])) < HIDE_LOOT_R
             safe = dist2((x, y), zc) < zr - 25.0 and (not soon or dist2((x, y), zs["next_center"]) < zs["next_radius"] - 20.0)
             if (has_special or t > HIDE_AFTER_S) and not near_loot and safe:
                 hold_still = True
                 hide_active = True
+                if HIDE_NOOK:
+                    if self.nook is None:
+                        self.nook = self.find_nook(x, y, z, zc, zr)
+                    nk = self.nook
+                    if nk is not None and math.hypot(nk[0]-x, nk[1]-y) > 3.0:
+                        hold_still = False
+                        move_x, move_y = nk[0]-x, nk[1]-y
+        if enemies or self.healing or engage:
+            self.nook = None
 
         # ---- projectile dodging
         for pr in obs.get("projectiles", []):
@@ -663,7 +712,7 @@ class Bot:
             act["aim"] = [wrap(aim_yaw), clamp(aim_pitch, -0.65, 1.25)]
         else:
             if hide_active and not (t - self.last_dmg[0] < 0.8):
-                act["aim"] = [wrap(me.get("aim", [0.0, 0.0])[0] + 0.3), 0.0]   # slow scan: 120 degree vision wedge follows the torso
+                act["aim"] = [wrap(me.get("aim", [0.0, 0.0])[0] + HIDE_SCAN), 0.0]   # slow scan: 120 degree vision wedge follows the torso
             elif t - self.last_dmg[0] < 0.8 and self.last_dmg[1] is not None:
                 act["aim"] = [wrap(self.last_dmg[1]), 0.0]
             elif math.hypot(mx, my) > 0.05:
