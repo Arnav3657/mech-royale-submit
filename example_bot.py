@@ -20,7 +20,7 @@ ENGAGE_RANGE = 130.0
 TELEMETRY = False
 HEAL_ENTER = 0.35       # hp fraction that starts "break contact and heal"
 HEAL_EXIT = 0.80
-FARM_MAX_CUBES = 21     # top-16 winners finished with ~27 cubes (more upgrade offers); farm drones/crates longer
+FARM_MAX_CUBES = 28     # top-16 winners finished with ~27 cubes (more upgrade offers); farm drones/crates longer
 FARM_RANGE = 90.0
 
 
@@ -147,7 +147,16 @@ class Bot:
             j = i
         return inside
 
-    def _blocked(self, x, y, feet_z):
+    def _blocked(self, x, y, feet_z, rad=0.0):
+        """True if a prism blocks (x, y); with rad > 0, if it blocks anywhere on the mech's body circle (cylinder radius 2.5 m)."""
+        if rad <= 0.0:
+            return self._blocked_pt(x, y, feet_z)
+        d = rad * 0.707
+        pt = self._blocked_pt
+        return (pt(x, y, feet_z) or pt(x+rad, y, feet_z) or pt(x-rad, y, feet_z) or pt(x, y+rad, feet_z) or pt(x, y-rad, feet_z)
+                or pt(x+d, y+d, feet_z) or pt(x-d, y+d, feet_z) or pt(x+d, y-d, feet_z) or pt(x-d, y-d, feet_z))
+
+    def _blocked_pt(self, x, y, feet_z):
         low, high = feet_z + 1.2, feet_z + 9.0
         for idx in self.grid.get((int(x // CELL), int(y // CELL)), ()):
             x0, x1, y0, y1, base, top, ring, holes = self.obstacles[idx]
@@ -195,7 +204,7 @@ class Bot:
                 px, py = x + r*math.cos(a), y + r*math.sin(a)
                 if math.hypot(px-zc[0], py-zc[1]) > zr - 15.0:
                     continue
-                if self._blocked(px, py, z):
+                if self._blocked(px, py, z, 2.6):
                     continue
                 hidden = True
                 for e in threats:
@@ -207,7 +216,7 @@ class Bot:
                 ok = True
                 for j in range(1, int(r/3.0)+1):
                     f = j*3.0/r
-                    if self._blocked(x+(px-x)*f, y+(py-y)*f, z):
+                    if self._blocked(x+(px-x)*f, y+(py-y)*f, z, 2.6 if f * r > 3.0 else 0.0):
                         ok = False
                         break
                 if not ok:
@@ -239,7 +248,7 @@ class Bot:
             steps = int(look / 1.5) + 1
             for k in range(1, steps+1):
                 r = min(look, k*1.5)
-                if self._blocked(x+ux*r, y+uy*r, z):
+                if self._blocked(x+ux*r, y+uy*r, z, 2.6 if r > 3.0 else 0.0):
                     clearance = max(0.0, r-1.5)
                     blocked = True
                     break
@@ -335,12 +344,11 @@ class Bot:
         # ---- upgrades
         offer = obs.get("offer")
         if offer and offer.get("choices"):
-            # ids verified against hello.config.upgrades. plating (+15% max HP) beats armor (-8% dmg = ~+8.7% eff. HP).
-            pri = {"plating": 112, "armor": 108, "gun_damage": 100, "gun_rate": 99, "gun_mag": 97,
-                   "nanites": 96, "servos": 82, "capacitor": 74, "reactor": 72, "lightning_chain": 71,
-                   "laser_damage": 70, "lightning_efficiency": 68, "gyros": 66, "jets": 64,
-                   "gun_velocity": 62, "lightning_range": 60, "sensors": 58, "laser_charge": 52,
-                   "mortar_reload": 50, "mortar_splash": 48, "mortar_velocity": 45, "laser_pierce": 40}
+            pri = {"armor": 110, "plating": 104, "gun_damage": 100, "gun_rate": 99, "nanites": 96,
+                   "servos": 80, "capacitor": 74, "reactor": 72, "laser_damage": 70, "gyros": 66,
+                   "jets": 64, "gun_velocity": 62, "sensors": 58, "laser_charge": 52,
+                   "mortar_reload": 50, "mortar_splash": 48, "lightning_efficiency": 68,
+                   "lightning_range": 60}
             ch = offer["choices"]
             act["pick"] = max(range(len(ch)), key=lambda i: pri.get(ch[i].get("id"), 0))
 
