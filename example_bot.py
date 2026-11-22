@@ -14,12 +14,12 @@ TAU = 2.0 * math.pi
 
 # ---- tunables (flip these between practice submissions to A/B test) ----
 AGGRESSION = 1          # 0 = v3-style pure kiting, 1 = engage when odds are acceptable
-RETREAT_HP_FRAC = 0.30  # below this fraction of max hp, disengage
-MAX_ENGAGE_ENEMIES = 4  # A-bot LLC (10 kills) fought aggressively; v5 used 2
-ENGAGE_RANGE = 160.0
+RETREAT_HP_FRAC = 0.35  # below this fraction of max hp, disengage
+MAX_ENGAGE_ENEMIES = 2  # A-bot LLC (10 kills) fought aggressively; v5 used 2
+ENGAGE_RANGE = 130.0
 TELEMETRY = False
-HEAL_ENTER = 0.28       # hp fraction that starts "break contact and heal"
-HEAL_EXIT = 0.80
+HEAL_ENTER = 0.50       # hp fraction that starts "break contact and heal"
+HEAL_EXIT = 0.85
 FARM_MAX_CUBES = 21     # top-16 winners finished with ~27 cubes (more upgrade offers); farm drones/crates longer
 FARM_RANGE = 90.0
 
@@ -80,7 +80,7 @@ CELL = 24.0
 
 
 class Bot:
-    name = "Oval Hunter v11c"
+    name = "Oval Hunter v11a"
 
     def __init__(self, hello):
         self.cfg = hello["config"]
