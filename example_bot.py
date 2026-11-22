@@ -1,4 +1,4 @@
-"""Oval Hunter (v9): kill-oriented Mech Royale bot. Standard library only.
+"""Oval Hunter (v10): kill-oriented Mech Royale bot. Standard library only.
 
 Scoring insight: house bots never fight each other, so points ~= number of other mechs dead when
 we die. Kills are what move the score, so v4 engages 1-2 enemies (focus fire on weak targets,
@@ -20,7 +20,7 @@ ENGAGE_RANGE = 130.0
 TELEMETRY = False
 HEAL_ENTER = 0.35       # hp fraction that starts "break contact and heal"
 HEAL_EXIT = 0.80
-FARM_MAX_CUBES = 28     # top-16 winners finished with ~27 cubes (more upgrade offers); farm drones/crates longer
+FARM_MAX_CUBES = 21     # top-16 winners finished with ~27 cubes (more upgrade offers); farm drones/crates longer
 FARM_RANGE = 90.0
 
 
@@ -80,7 +80,7 @@ CELL = 24.0
 
 
 class Bot:
-    name = "Oval Hunter v9"
+    name = "Oval Hunter v10"
 
     def __init__(self, hello):
         self.cfg = hello["config"]
@@ -335,11 +335,12 @@ class Bot:
         # ---- upgrades
         offer = obs.get("offer")
         if offer and offer.get("choices"):
-            pri = {"armor": 110, "plating": 104, "gun_damage": 100, "gun_rate": 99, "nanites": 96,
-                   "servos": 80, "capacitor": 74, "reactor": 72, "laser_damage": 70, "gyros": 66,
-                   "jets": 64, "gun_velocity": 62, "sensors": 58, "laser_charge": 52,
-                   "mortar_reload": 50, "mortar_splash": 48, "lightning_efficiency": 68,
-                   "lightning_range": 60}
+            # ids verified against hello.config.upgrades. plating (+15% max HP) beats armor (-8% dmg = ~+8.7% eff. HP).
+            pri = {"plating": 112, "armor": 108, "gun_damage": 100, "gun_rate": 99, "gun_mag": 97,
+                   "nanites": 96, "servos": 82, "capacitor": 74, "reactor": 72, "lightning_chain": 71,
+                   "laser_damage": 70, "lightning_efficiency": 68, "gyros": 66, "jets": 64,
+                   "gun_velocity": 62, "lightning_range": 60, "sensors": 58, "laser_charge": 52,
+                   "mortar_reload": 50, "mortar_splash": 48, "mortar_velocity": 45, "laser_pierce": 40}
             ch = offer["choices"]
             act["pick"] = max(range(len(ch)), key=lambda i: pri.get(ch[i].get("id"), 0))
 
