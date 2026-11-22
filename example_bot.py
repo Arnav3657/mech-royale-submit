@@ -1,4 +1,4 @@
-"""Oval Hunter (v11): kill-oriented Mech Royale bot. Standard library only.
+"""Oval Hunter (v12): kill-oriented Mech Royale bot. Standard library only.
 
 Scoring insight: house bots never fight each other, so points ~= number of other mechs dead when
 we die. Kills are what move the score, so v4 engages 1-2 enemies (focus fire on weak targets,
@@ -18,9 +18,11 @@ RETREAT_HP_FRAC = 0.30  # below this fraction of max hp, disengage
 MAX_ENGAGE_ENEMIES = 3  # A-bot LLC (10 kills) fought aggressively; v5 used 2
 ENGAGE_RANGE = 130.0
 TELEMETRY = False
+HIDE = 1               # stealth bet: once armed (or after HIDE_AFTER_S), stand still + scan instead of wandering when nobody is in sight
+HIDE_AFTER_S = 45.0
 NAV_RAD = 0.0           # body-clearance radius (m) for path planning; 0 = v9 behaviour (point check). v10 used 2.6 and scored worse (2.40)
 NAV_RAD_FROM = 3.0      # only apply NAV_RAD to samples farther than this from the mech
-COVER_RAD = 2.6         # body-clearance radius for cover search; 0 = v9 behaviour
+COVER_RAD = 0.0         # body-clearance radius for cover search; 0 = v9 behaviour
 HEAL_ENTER = 0.35       # hp fraction that starts "break contact and heal"
 HEAL_EXIT = 0.80
 FARM_MAX_CUBES = 28     # top-16 winners finished with ~27 cubes (more upgrade offers); farm drones/crates longer
@@ -83,7 +85,7 @@ CELL = 24.0
 
 
 class Bot:
-    name = "Oval Hunter v11"
+    name = "Oval Hunter v12"
 
     def __init__(self, hello):
         self.cfg = hello["config"]
@@ -537,6 +539,15 @@ class Bot:
                         bb = s_.get("bearing", 0.0)
                         move_x -= math.cos(bb)*20; move_y -= math.sin(bb)*20
 
+        hide_active = False
+        if HIDE and not enemies and not self.healing and not engage:
+            has_special = any(k and k != "gun" for k in kinds)
+            near_loot = goal is not None and dist2((x, y), (goal[1], goal[2])) < 40.0
+            safe = dist2((x, y), zc) < zr - 25.0 and (not soon or dist2((x, y), zs["next_center"]) < zs["next_radius"] - 20.0)
+            if (has_special or t > HIDE_AFTER_S) and not near_loot and safe:
+                hold_still = True
+                hide_active = True
+
         # ---- projectile dodging
         for pr in obs.get("projectiles", []):
             pp = pr.get("pos", [0, 0, 0]); pv = pr.get("vel", [0, 0, 0])
@@ -651,7 +662,9 @@ class Bot:
                         act["fire"][i] = 22 < d < 215 and w.get("cooldown", 1) <= 0.08
             act["aim"] = [wrap(aim_yaw), clamp(aim_pitch, -0.65, 1.25)]
         else:
-            if t - self.last_dmg[0] < 0.8 and self.last_dmg[1] is not None:
+            if hide_active and not (t - self.last_dmg[0] < 0.8):
+                act["aim"] = [wrap(me.get("aim", [0.0, 0.0])[0] + 0.3), 0.0]   # slow scan: 120 degree vision wedge follows the torso
+            elif t - self.last_dmg[0] < 0.8 and self.last_dmg[1] is not None:
                 act["aim"] = [wrap(self.last_dmg[1]), 0.0]
             elif math.hypot(mx, my) > 0.05:
                 act["aim"] = [math.atan2(my, mx), 0.0]
